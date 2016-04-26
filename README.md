@@ -8,3 +8,7 @@ Team Strada Kaggle Competitions
 [Add info on ML algorithm and Kaggle performance]
 
 [Info on competition](https://www.kaggle.com/c/titanic)
+
+## Santander
+
+Huge class imbalance in the training data, 97:3
