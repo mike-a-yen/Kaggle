@@ -31,8 +31,6 @@ if __name__ == "__main__":
 
     train.to_json(os.path.join(save_path,'train_tokenized.json'))
     val.to_json(os.path.join(save_path,'val_tokenized.json'))
-    #train = pd.read_json('data/train_tokenized.json')
-    #val = pd.read_json('data/val_tokenized.json')
     train_size = len(train)
     val_size = len(val)
     print('Training size:',train_size)
@@ -43,8 +41,9 @@ if __name__ == "__main__":
     w2v = Word2Vec(train_comments,size=128,min_count=5,max_vocab_size=20000)
     w2v.wv.save(os.path.join(save_path,'word_embeddings.wv'))
     vocab_size = len(w2v.wv.index2word)
+    unk = vocab_size
     tok_to_idx = {t:i for i,t in enumerate(w2v.wv.index2word)}
-    train['encoded'] = train['tokens'].apply(lambda text: [tok_to_idx.get(t.lower(),vocab_size) for t in text])
-    val['encoded'] = val['tokens'].apply(lambda text: [tok_to_idx.get(t.lower(),vocab_size) for t in text])
+    train['encoded'] = train['tokens'].apply(lambda text: [tok_to_idx.get(t.lower(),unk) for t in text])
+    val['encoded'] = val['tokens'].apply(lambda text: [tok_to_idx.get(t.lower(),unk) for t in text])
     train.to_json(os.path.join(save_path,'train_tokenized.json'))
-    val.to_json(os.path.join(save_path,'train_tokenized.json'))
+    val.to_json(os.path.join(save_path,'val_tokenized.json'))
