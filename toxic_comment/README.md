@@ -31,5 +31,13 @@ $ python prepare_data.py --file-path data/train.csv --save-path data/
  Name: mean, dtype: float64
 
  Tokenizing...
+ Training size: 135635
+Validation size: 23936
+Training Word2Vec....
 ```
-Creates `data/<train|val>.json` with comments tokenized.
+Creates `data/<train|val>_tokenized.json` with comments tokenized. The word embeddings are saved as `gensim KeyedVectors` to `data/word_embeddings.wv`.
+
+## Train
+```
+python trainer.py --file-path data/ --wv-path data/word_embeddings.wv --save-path models/
+```
