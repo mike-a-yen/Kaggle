@@ -76,11 +76,17 @@ class Trainer(object):
         return loss,acc
 
     def train(self,data,opt,epochs,val=None):
+        if val is not None:
+            val_loss,val_acc = self.evaluate(val)
+            val_acc *= 100
+            message = "| Initial | val loss: {:0.6f} | val acc: {:2.2f}% |"
+            message = message.format(val_loss,val_acc)
+            print(message)
         for epoch_id in range(1,epochs+1):
             print('-'*79)
             train_loss,train_acc = self.train_epoch(data,opt)
             train_acc *= 100
-            if val:
+            if val is not None:
                 val_loss,val_acc = self.evaluate(val)
                 val_acc *= 100
             else:
