@@ -66,14 +66,13 @@ class Trainer(object):
             sample_count += batch.size
             if batch_count%self.log_interval==0:
                 int_loss = loss/sample_count
-                int_acc = 100*corr/(sample_count*self.model.clf.W.out_features)
-                print(int_acc)
+                int_acc = 100*acc/(sample_count*self.model.clf.W.out_features)
                 message = "| Epoch {} | {}/{} batch | Interval loss: {:4.6f} | Interval Acc: {:0.2f}% |"
                 message = message.format(1,batch_count,n_batches,int_loss,int_acc)
                 print(message)
         self.model.zero_grad()
         loss /= len(data)
-        acc = corr/(len(data)*self.model.clf.W.out_features)
+        acc /= (len(data)*self.model.clf.W.out_features)
         return loss,acc
 
     def train(self,data,opt,epochs,val=None):
@@ -99,7 +98,7 @@ class Trainer(object):
             sample = data.iloc[slow:slow+self.batch_size]
             batch = Batch(sample)
             Y_hat = self.predict_batch(batch)
-            loss += batch.size*self.loss(Y_hat,batch.outputs)
+            loss += batch.size*self.loss(Y_hat,batch.outputs).item()
             y_pred = (Y_hat>0.5).to(float32)
             acc += (batch.outputs.eq(y_pred)).sum().item()
         loss /= len(data)
@@ -136,7 +135,7 @@ if __name__ == "__main__":
     print('Word Embeddings:',embeddings.shape)
 
     epochs = 4
-    lr = 0.01
+    lr = 0.005
     rnn_size = 128
     rnn_layers = 2
     dropout = 0.3
