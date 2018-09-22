@@ -1,18 +1,31 @@
 import torch
 import torch.nn as nn
 
+import time
+import numpy as np
+from sklearn.metrics import roc_auc_score
+
 CLASS_LABELS = ['toxic','severe_toxic','obscene','threat','insult','identity_hate']
+
+def class_mean_auc(y_pred,y_true):
+    true = np.array(y_true)
+    pred = np.array(y_pred)
+    n_classes = true.shape[1]
+    score = 0.
+    for i in range(n_classes):
+        score += roc_auc_score(true[:,i],pred[:,i])
+    return score/n_classes
 
 def pad_sequence(seq,maxlen,value):
     diff = maxlen-len(seq)
     return diff*[value]+seq
 
 class Batch(object):
-    def __init__(self,sample,cuda=True):
+    def __init__(self,sample,pad_val,cuda=True):
         columns = CLASS_LABELS
         self.sample = sample
         self.maxlen = max(map(len,self.sample['encoded'].values))
-        tokens = [pad_sequence(seq,self.maxlen,7330) for seq in sample['encoded'].values]
+        tokens = [pad_sequence(seq,self.maxlen,pad_val) for seq in sample['encoded'].values]
         self.torch_input = torch.LongTensor(tokens).contiguous().transpose(0,1)
         self.outputs = torch.FloatTensor(self.sample[columns].values).contiguous()
         if cuda:
@@ -22,10 +35,12 @@ class Batch(object):
 
 class Trainer(object):
     def __init__(self,model,log_inteval=100,cuda=True):
+        self.vocab_size = model.encoder.embedding.num_embeddings
+        self.pad_val = self.vocab_size - 1
         self.model = model
         self.cuda = cuda
         self.loss = nn.BCELoss()
-        self.batch_size = 16
+        self.batch_size = 32
         self.log_interval = log_inteval
 
     def predict_batch(self,batch):
@@ -41,8 +56,7 @@ class Trainer(object):
         Y = batch.outputs
         Y_hat = self.predict_batch(batch)
         cost = self.loss(Y_hat,Y)
-        corr = Y.eq((Y_hat>0.5).to(torch.float32)).sum().item()
-        return cost,corr
+        return cost,Y_hat
 
     def train_epoch(self,data,opt):
         self.model.train()
@@ -50,70 +64,91 @@ class Trainer(object):
         indices = np.arange(len(data))
         np.random.shuffle(indices)
         loss = 0
-        acc = 0
+        auc= 0
         sample_count = 0
         batch_count = 0
+        preds = []
+        trues = []
+        start_time = time.time()
         for slow in range(0,len(data)-1,self.batch_size):
             self.model.zero_grad()
             sample = data.iloc[indices[slow:slow+self.batch_size]]
-            batch = Batch(sample,self.cuda)
-            cost,corr = self.train_batch(batch)
-            acc += corr
+            batch = Batch(sample,self.pad_val,self.cuda)
+            cost,y_pred = self.train_batch(batch)
             loss += batch.size*cost.item()
             cost.backward()
             opt.step()
+            for p,t in zip(y_pred.cpu().detach().numpy(),batch.outputs.cpu().numpy()):
+                preds.append(p)
+                trues.append(t)
             batch_count += 1
             sample_count += batch.size
             if batch_count%self.log_interval==0:
+                elapsed = time.time()-start_time
                 int_loss = loss/sample_count
-                int_acc = 100*acc/(sample_count*self.model.clf.W.out_features)
-                message = "| Epoch {} | {}/{} batch | Interval loss: {:4.6f} | Interval Acc: {:0.2f}% |"
-                message = message.format(1,batch_count,n_batches,int_loss,int_acc)
+                auc = class_mean_auc(preds,trues)
+                int_auc = 100*auc
+                message = "| Epoch {} | {}/{} batch| {:4.1f} sec| Interval loss: {:4.6f} | Interval AUC: {:0.2f}% |"
+                message = message.format(1,batch_count,n_batches,elapsed,int_loss,int_auc)
                 print(message)
+                start_time = time.time()
         self.model.zero_grad()
         loss /= len(data)
-        acc /= (len(data)*self.model.clf.W.out_features)
-        return loss,acc
+        auc = class_mean_auc(preds,trues)
+        return loss,auc
 
-    def train(self,data,opt,epochs,val=None):
+    def train(self,data,opt,epochs,stepper=None,val=None):
+        history = {'train_loss':[],'train_auc':[],
+                   'val_loss':[],'val_auc':[]}
         if val is not None:
-            val_loss,val_acc = self.evaluate(val)
-            val_acc *= 100
-            message = "| Initial | val loss: {:0.6f} | val acc: {:2.2f}% |"
-            message = message.format(val_loss,val_acc)
+            val_loss,val_auc = self.evaluate(val)
+            val_auc *= 100
+            message = "| Initial | Val loss: {:0.6f} | Val AUC: {:2.2f}% |"
+            message = message.format(val_loss,val_auc)
             print(message)
         for epoch_id in range(1,epochs+1):
             print('-'*79)
-            train_loss,train_acc = self.train_epoch(data,opt)
-            train_acc *= 100
+            train_loss,train_auc = self.train_epoch(data,opt)
+            train_auc *= 100
             if val is not None:
-                val_loss,val_acc = self.evaluate(val)
-                val_acc *= 100
+                val_loss,val_auc = self.evaluate(val)
+                val_auc *= 100
             else:
                 val_loss = None
-                val_acc = None
-            message = "| End Epoch {} | train loss: {} | train acc: {:0.2f}% | val loss {} | val acc {:0.2f}%"
-            message = message.format(epoch_id,train_loss,train_acc,val_loss,val_acc)
+                val_auc = None
+            message = "| End Epoch {} | train loss: {:4.6f} | train AUC: {:0.2f}% | val loss {:4.6f} | val AUC {:0.2f}%"
+            message = message.format(epoch_id,train_loss,train_auc,val_loss,val_auc)
             print(message)
+            history['train_loss'].append(train_loss)
+            history['train_auc'].append(train_auc)
+            history['val_loss'].append(val_loss)
+            history['val_auc'].append(val_auc)
+            if stepper is not None:
+                stepper.step()
+            return history
 
     def evaluate(self,data):
         self.model.eval()
         loss = 0
-        acc = 0
+        auc = 0
+        trues = []
+        preds = []
         for slow in range(0,len(data)-1,self.batch_size):
             sample = data.iloc[slow:slow+self.batch_size]
-            batch = Batch(sample)
+            batch = Batch(sample,self.pad_val,self.cuda)
             Y_hat = self.predict_batch(batch)
             loss += batch.size*self.loss(Y_hat,batch.outputs).item()
-            y_pred = (Y_hat>0.5).to(float32)
-            acc += (batch.outputs.eq(y_pred)).sum().item()
+            for p,t in zip(Y_hat.cpu().detach().numpy(),batch.outputs.cpu().numpy()):
+                trues.append(t)
+                preds.append(p)
         loss /= len(data)
-        acc /= len(data)*self.model.clf.W.out_features
-        return loss,acc
+        auc = class_mean_auc(preds,trues)
+        return loss,auc
 
 if __name__ == "__main__":
     import argparse
     import os
+    import json
     import pandas as pd
     import numpy as np
     from gensim.models import KeyedVectors
@@ -123,7 +158,7 @@ if __name__ == "__main__":
     parser.add_argument("--file-path")
     parser.add_argument("--wv-path")
     parser.add_argument("--save-path")
-    parser.add_argument("--log-interval",default=100,type=int)
+    parser.add_argument("--log-interval",default=500,type=int)
     args = parser.parse_args()
     file_path = args.file_path
     wv_path = args.wv_path
@@ -140,13 +175,17 @@ if __name__ == "__main__":
     embeddings = np.vstack([weights,unk])
     print('Word Embeddings:',embeddings.shape)
 
-    epochs = 4
-    lr = 0.005
-    rnn_size = 128
+    epochs = 16
+    lr = 0.01
+    step_size = 2
+    gamma = 0.8
+
+    rnn_size = 256
     rnn_layers = 2
     dropout = 0.3
     bi = True
     cuda = True
+
     encoder = RNNEncoder(embeddings,rnn_size,rnn_layers,dropout,bi)
     clf = Classifier((1+bi)*rnn_size,n_classes)
     model = ToxicClassifier(encoder,clf)
@@ -155,5 +194,17 @@ if __name__ == "__main__":
 
     trainer = Trainer(model,log_interval,cuda)
     opt = torch.optim.Adam(model.parameters(),lr)
+    stepper = torch.optim.lr_scheduler.StepLR(opt,step_size,gamma=gamma)
     print('Training...')
-    trainer.train(train,opt,epochs,val)
+    history = trainer.train(train,opt,epochs,stepper,val)
+
+    torch.save(trainer.model.state_dict(),
+               os.path.join(save_path,'toxic_model.state'))
+    model_params = {'rnn_size':rnn_size,
+                    'rnn_layers':rnn_layers,
+                    'dropout':dropout,
+                    'bi':bi,
+                    'n_classes':n_classes,
+                    'history':history}
+    json.dump(model_params,
+              open(os.path.join(save_path,'toxic_model.params'),'w'))
