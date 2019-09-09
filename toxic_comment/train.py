@@ -5,7 +5,8 @@ import string
 from tensorflow.keras.utils import Sequence
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 
-from exports.exp_00 import RawDataset, ProcessedDataset, TrainableDataset
+from exports.exp_00 import RawDataset, ProcessedDataset
+from trainable_dataset import TrainableDataset
 from exports.vocab import Vocabulary, VocabEncoder
 
 PROJECT_DIRNAME = Path('./').resolve()
@@ -17,30 +18,43 @@ def load_dataset(project_path: Path, subsample: int = 0):
     trainable_dataset = TrainableDataset(processed_dataset)
     return trainable_dataset
 
+
 class DataGenerator(Sequence):
-    def __init__(self, df,  transform=None, batch_size: int = 32):
-        self.df = df
-        self.transform = transform
+    def __init__(self, trainable_dataset, batch_size: int = 32, mode='train'):
+        self.dataset = trainable_dataset
         self.batch_size = batch_size
-        self.target = 'toxic'
+        self.training = mode == 'train'
+        self.testing = mode == 'test'
+        assert mode in('train', 'val', 'test')
 
     def __len__(self) -> int:
-        return int(np.ceil(self.df.shape[0]/self.batch_size))
+        n_samples = len(self.dataset)
+        return int(np.ceil(n_samples/self.batch_size))
 
     def __getitem__(self, idx: int):
-        batch_df = self._get_batch(idx)
-        X = batch_df.comment_words
-        X = self.transform(X)
-        Y = batch_df[self.target]
-        return X, Y
+        batch = self._get_batch(idx)
+        X = [item[0] for item in batch]
+        maxlen = max(map(len, X))
+        X = pad_sequences(X, maxlen)
+        if not self.dataset.testing:
+            Y = [np.expand_dim(item[1], 0) for item in batch]
+            Y = np.concatenate(Y, 0)
+            return X, Y
+        return X
+
+    def _get_batch(self, idx: int):
+        offset = self.batch_size * idx
+        self.dataset.training = self.training
+        self.dataset.testing = self.testing
+        end = min(len(self.dataset), offset+self.batch_size)
+        items = [self.dataset[i] for i in range(offset, end)]
+        return items
+
+
 def main(subsample: int = 0) -> None:
     trainable_dataset = load_dataset(PROJECT_DIRNAME, subsample)
-    vocab = Vocabulary(list(string.printable))
-    token_encoder = VocabEncoder(vocab)
-    
-    X_col = 'comment_words'
-    X_train = trainable_dataset.train_df[X_col].apply(token_encoder.encode)
-    print(X_train)
+    sample = trainable_dataset[0]
+    print(sample)
     return
 
 
