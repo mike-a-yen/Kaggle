@@ -2,6 +2,7 @@ import fire
 from pathlib import Path
 import string
 
+import numpy as np
 from tensorflow.keras.utils import Sequence
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 
@@ -37,7 +38,7 @@ class DataGenerator(Sequence):
         maxlen = max(map(len, X))
         X = pad_sequences(X, maxlen)
         if not self.dataset.testing:
-            Y = [np.expand_dim(item[1], 0) for item in batch]
+            Y = [np.expand_dims(item[1], 0) for item in batch]
             Y = np.concatenate(Y, 0)
             return X, Y
         return X
@@ -53,8 +54,14 @@ class DataGenerator(Sequence):
 
 def main(subsample: int = 0) -> None:
     trainable_dataset = load_dataset(PROJECT_DIRNAME, subsample)
-    sample = trainable_dataset[0]
-    print(sample)
+    train_dg = DataGenerator(trainable_dataset, batch_size=32, mode='train')
+    val_dg = DataGenerator(trainable_dataset, batch_size=32, mode='val')
+    X, Y = train_dg[0]
+    print(X.shape)
+    print(Y.shape)
+    X, Y = val_dg[0]
+    print(X.shape)
+    print(Y.shape)
     return
 
 
