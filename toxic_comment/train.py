@@ -3,6 +3,8 @@ from pathlib import Path
 import string
 
 import numpy as np
+import tensorflow as tf
+import tensorflow.keras.callbacks as callbacks
 from tensorflow.keras.utils import Sequence
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 import wandb
@@ -23,23 +25,52 @@ def load_dataset(project_path: Path, subsample: int = 0):
     return trainable_dataset
 
 
+def tf_hack():
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
+    sess = tf.compat.v1.Session(config=config)
+    return sess
+
+def model_checkpoint_dirname() -> Path:
+    identifier = wandb.run.id
+    dirname = PROJECT_DIRNAME / f'_models/{identifier}/checkpoints'
+    dirname.mkdir(exist_ok=True, parents=True)
+    return dirname
+
 def main(subsample: int = 0) -> None:
+    sess = tf_hack()
     wandb.init(project='toxic_comment')
     trainable_dataset = load_dataset(PROJECT_DIRNAME, subsample)
-    train_dg = DataGenerator(trainable_dataset, batch_size=32, mode='train')
-    val_dg = DataGenerator(trainable_dataset, batch_size=32, mode='val')
+    print(trainable_dataset)
+
     model_params = {
         'vocab_size': trainable_dataset.vocab_encoder.vocab.size,
         'embedding_size': 16,
-        'output_size': 64
+        'num_kernels': 256,
+        'width': 4,
+        'output_size': 64,
+        'targets': len(trainable_dataset.toxicity_columns),
+        'opt_params': {
+            'lr': 0.001
+        }
     }
+    checkpoint_path = str(model_checkpoint_dirname() / '{epoch:02d}-{val_loss:.2f}.hdf5')
     training_params = {
         "epochs": 150,
-        "callbacks": [wandb.keras.WandbCallback()]
+        "batch_size": 64,
+        "callbacks": [
+            wandb.keras.WandbCallback(),
+            callbacks.ModelCheckpoint(
+                checkpoint_path
+            )
+        ]
     }
 
+    batch_size = training_params.pop('batch_size')
+    train_dg = DataGenerator(trainable_dataset, batch_size=batch_size, mode='train')
+    val_dg = DataGenerator(trainable_dataset, batch_size=batch_size, mode='val')
     model = build_model(model_params, name='model')
-    compile_model(model)
+    compile_model(model, model_params)
     history = model.fit_generator(
         train_dg,
         validation_data=val_dg,

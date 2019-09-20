@@ -54,8 +54,14 @@ class TrainableDataset:
         return self.vocab_encoder.encode(X)
 
     def output_transform(self, Y):
-        any_toxic = int(Y.sum() > 0)
-        return np.array([any_toxic])
+        toxic_int = (Y >= 0.5).astype(int)
+        return toxic_int
     
+    @property
+    def mean_target(self):
+        return self.train_df[self.toxicity_columns].values.mean(axis=0)
+
     def __repr__(self) -> str:
-        return f'Train samples: {self.n_train}, Val samples: {self.n_val}, Test samples: {self.n_test}'
+        msg = f'Train samples: {self.n_train}, Val samples: {self.n_val}, Test samples: {self.n_test}'
+        msg += f'\n' + ' '.join([f'{col}: {t:0.4f}' for t, col in zip(self.mean_target, self.toxicity_columns)])
+        return msg
