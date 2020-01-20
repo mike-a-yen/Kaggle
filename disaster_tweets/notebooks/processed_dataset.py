@@ -2,7 +2,7 @@ import pandas as pd
 from nn_toolkit.vocab import Vocab, VocabBuilder
 
 from raw_dataset import RawDataset
-from tokenizer import TweetTokenizer
+from tokenizer import ProjectTokenizer
 
 
 class ProcessedDataset:
@@ -12,7 +12,7 @@ class ProcessedDataset:
 
     def __init__(self, raw: RawDataset) -> None:
         self.__dict__.update(raw.__dict__)
-        self.tokenizer = TweetTokenizer()
+        self.tokenizer = ProjectTokenizer()
 
     def process(self) -> None:
         self.tokenize_df(self.train_df)
@@ -21,5 +21,4 @@ class ProcessedDataset:
     def tokenize_df(self, df: pd.DataFrame) -> None:
         df['tokens'] = df.text.apply(self.tokenizer)
         df['location_tokens'] = df.location.fillna('').apply(self.tokenizer)
-
-    
+        df['keyword_tokens'] = df.keyword.fillna('').apply(lambda x: self.tokenizer(x.replace('%20', ' ')) )
