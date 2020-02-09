@@ -1,0 +1,4 @@
+max_vocab_size = 50000
+hidden_size = 256
+num_layers = 4
+dropout_rate = 0.5

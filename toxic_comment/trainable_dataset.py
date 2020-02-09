@@ -10,7 +10,7 @@ from exports.exp_00 import ProcessedDataset, split_df
 class TrainableDataset:
     def __init__(self, processed_dataset: ProcessedDataset) -> None:
         self.toxicity_columns = processed_dataset.toxicity_subtypes
-        self.input_column = 'comment_words'
+        self.input_column = 'comment_text'
         self.trainval_df = processed_dataset.train_df
         self.train_df, self.val_df = split_df(self.trainval_df, frac=0.1)
         self.test_df = processed_dataset.test_df
@@ -43,7 +43,7 @@ class TrainableDataset:
     def __getitem__(self, idx: int):
         row = self.get_row(idx)
         X = row[self.input_column]
-        X = self.input_transform(X)
+        #X = self.input_transform(X)
         if not self.testing:
             Y = row[self.toxicity_columns]
             Y = self.output_transform(Y)

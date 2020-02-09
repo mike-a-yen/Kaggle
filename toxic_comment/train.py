@@ -48,13 +48,13 @@ def main(subsample: int = 0) -> None:
         'embedding_size': 16,
         'num_kernels': 256,
         'width': 4,
-        'output_size': 64,
+        'output_size': 128,
         'targets': len(trainable_dataset.toxicity_columns),
         'opt_params': {
             'lr': 0.001
         }
     }
-    checkpoint_path = str(model_checkpoint_dirname() / '{epoch:02d}-{val_loss:.2f}.hdf5')
+    checkpoint_path = str(model_checkpoint_dirname() / 'epoch-{epoch:02d}-val_loss-{val_loss:.2f}.hdf5')
     training_params = {
         "epochs": 150,
         "batch_size": 64,

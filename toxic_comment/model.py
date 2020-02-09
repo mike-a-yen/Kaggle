@@ -1,13 +1,18 @@
 import tensorflow as tf
+import tensorflow_hub as hub
 import tensorflow.keras.layers as layers
 import tensorflow.keras.models as models
 import tensorflow.keras.optimizers as optimizers
 
 
 def build_model(model_params, **kwargs):
-    input_layer = layers.Input(shape=(None,))
-    encoder = Encoder(model_params, name='encoder')(input_layer)
-    logit = layers.Dense(model_params['targets'])(encoder)
+    input_layer = layers.Input(shape=(1,), dtype=tf.string)
+    encoder = UniversalSentenceEncoder(name='encoder')
+    logit_model = models.Sequential([layers.Dense(256, activation='tanh') for _ in range(3)])
+    logit_model.add(layers.Dense(model_params['targets']))
+
+    emb = encoder(input_layer)
+    logit = logit_model(emb)
     act = layers.Activation('sigmoid')(logit)
     model = models.Model(input_layer, act)
     return model
@@ -23,6 +28,24 @@ def compile_model(model, model_params) -> None:
                   metrics=['accuracy']
     )
     return
+
+
+class UniversalSentenceEncoder(layers.Layer):
+    def __init__(
+        self,
+        module_url: str = "https://tfhub.dev/google/universal-sentence-encoder-large/3",
+        **kwargs
+    ) -> None:
+        super(UniversalSentenceEncoder, self).__init__(**kwargs)
+        self.module_url = module_url
+        self.module = hub.Module(self.module_url)
+        self.encoder = layers.Lambda(self.call_encoder)
+
+    def call(self, x: tf.Tensor) -> tf.Tensor:
+        return self.encoder(x)
+
+    def call_encoder(self, x: tf.Tensor) -> tf.Tensor:
+        return self.module(tf.squeeze(tf.cast(x, tf.string)))
 
 
 class HighwayBlock(layers.Layer):
