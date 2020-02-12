@@ -21,9 +21,9 @@ class DataMatcher:
     data to be helpful in training.
     """
 
-    def __init__(self, real_df: pd.DataFrame) -> None:
-        self.text_col = 'text'
-        self.token_col = 'raw_text_tokens'
+    def __init__(self, real_df: pd.DataFrame, text_col: str = 'text', token_col: str = 'tokens') -> None:
+        self.text_col = text_col
+        self.token_col = token_col
         self.real_df = real_df
         self.n_real = self.real_df.shape[0]
         self.pipeline : Pipeline
@@ -46,11 +46,19 @@ class DataMatcher:
         return (~too_long).values.astype(np.float32)
 
     def build_estimator(self) -> Pipeline:
-        tokenizer = ProjectTokenizer()
-        self.vectorizer = TfidfVectorizer(min_df=5, stop_words='english', tokenizer=tokenizer)
+        def dummy_fn(x):
+            return x
+        self.vectorizer = TfidfVectorizer(
+            min_df=5,
+            stop_words=None,
+            tokenizer=dummy_fn,
+            preprocessor=dummy_fn,
+            analyzer='word',
+            token_pattern=None
+        )
         self.column_transformer = ColumnTransformer(
             [
-                ('tfidf', self.vectorizer, self.text_col),
+                ('tfidf', self.vectorizer, self.token_col),
                 ('n_chars', LengthTransformer(scale=True), self.text_col),
                 ('n_tokens', LengthTransformer(scale=True), self.token_col)
             ],

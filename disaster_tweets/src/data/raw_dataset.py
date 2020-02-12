@@ -5,6 +5,8 @@ import zipfile
 
 import pandas as pd
 
+from src.utils import hash_df
+
 
 _PROJECT_DIRNAME = Path(__file__).parents[2]
 _DATA_DIRNAME = _PROJECT_DIRNAME / 'data'
@@ -32,14 +34,16 @@ def _load_file_as_df(filepath, remove_failed: bool = False) -> pd.DataFrame:
 
 class RawDataset:
     def __init__(self, filename: str = "nlp-getting-started.zip", extra_data: List[Path] = []) -> None:
+        self.text_col = 'text'
         archive_names = ['train', 'test']
         with zipfile.ZipFile(_RAW_DIRNAME / filename) as zo:
             for name in archive_names:
                 df = pd.read_csv(zo.open(f'{name}.csv'))
                 if name != 'test':
-                    df = df.drop_duplicates(subset=['text', 'keyword'])
+                    df = df.drop_duplicates(subset=['text'])
                 setattr(self, f'{name}_df', df)
         self.extra_df = self._load_extra_data(extra_data)
+        self.hash = hash_df(self.extra_df)
         print(f'Loaded {self.train_df.shape[0]} training data.')
         print(f'Loaded {self.test_df.shape[0]} test data.')
         print(f'Loaded {self.extra_df.shape[0]} extra data.')

@@ -8,6 +8,8 @@ from src.data.processed_dataset import ProcessedDataset
 
 class SplitDataset:
     def __init__(self, processed: ProcessedDataset, frac: float = 0.2) -> None:
+        self.text_col = processed.text_col
+        self.tokenizer = processed.tokenizer
         self.train_df, self.val_df = [
             df.copy() for df in
             train_test_split(processed.train_df, test_size=frac)

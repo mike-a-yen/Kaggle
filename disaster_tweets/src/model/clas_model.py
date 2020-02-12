@@ -6,14 +6,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.model.dense import HighwayBlock, DropConnect
-from src.model.language_model import ResTextEncoder
+from nn_toolkit.text.model.dense import HighwayBlock, DropConnect
+from nn_toolkit.text.model.embedding import Embedding
+from nn_toolkit.text.model.sequence import TextSequenceEncoder
 
 
 def attention(query, key, value, mask = None):
     Tq = query.size(1)
     Tv = key.size(1)
-    mask = torch.ones(1, Tq, Tv).triu(diagonal=1).to(query.device)
     attn_score = torch.bmm(query, torch.transpose(key, 1, 2))  # (B, T, T)
     if mask is not None:
         attn_score -= mask * 1e9
@@ -26,11 +26,13 @@ class SimpleClassifier(nn.Module):
     def __init__(self, model_dir: Path) -> None:
         super().__init__()
         self.config = {'model_dir': str(model_dir)}
-        self.encoder = ResTextEncoder.from_file(model_dir / 'bi_language_model.pth')
+        self.embedding_layer = Embedding.from_file(model_dir / 'fwd_embedding.pth')
+        self.encoder = TextSequenceEncoder.from_file(model_dir / 'fwd_language_model.pth')
         hidden_size = self.encoder.hidden_size
         dropout_rate = 0.5
+        self.q_proj, self.k_proj = nn.Linear(hidden_size, hidden_size), nn.Linear(hidden_size, hidden_size)
         self.densor = nn.Sequential(
-            DropConnect(nn.Linear(2 * hidden_size, hidden_size), dropout_rate),
+            DropConnect(nn.Linear(hidden_size, hidden_size), dropout_rate),
             nn.Tanh(),
             HighwayBlock(hidden_size, dropout_rate),
             nn.Tanh(),
@@ -38,9 +40,11 @@ class SimpleClassifier(nn.Module):
         )
 
     def forward(self, X: torch.LongTensor) -> torch.FloatTensor:
-        femb, bemb = self.encoder(X)
-        femb, bemb = femb[:, :-2], bemb[:, 2:]
-        emb = torch.cat([femb, bemb], dim=2)
+        emb = self.embedding_layer(X)
+        mask = self.embedding_layer.get_mask(X)
+        emb = self.encoder(emb, mask)
+        q, k = self.q_proj(emb), self.k_proj(emb)
+        emb, attn = attention(q, k, k, mask.float().unsqueeze(-1))
         emb = emb[:, -1]
         logit = self.densor(emb)
         return logit
@@ -49,7 +53,7 @@ class SimpleClassifier(nn.Module):
         with open(path.with_suffix('.config'), 'w') as fo:
             json.dump(self.config, fo)
         torch.save(self.state_dict(), path)
-    
+
     @classmethod
     def from_file(cls, path: Path) -> None:
         config_file = path.with_suffix('.config')
@@ -63,13 +67,11 @@ class SimpleClassifier(nn.Module):
 
     def split_layers(self) -> List:
         groups = [
-            self.encoder.embedding_layer,
+            [self.embedding_layer],
+            [self.encoder],
             [
-                self.encoder.fwd_rnns,
-                self.encoder.bwd_rnns,
-                self.encoder.fwd_residual,
-                self.encoder.bwd_residual
+                self.rnn,
+                self.densor
             ],
-            self.densor
         ]
         return groups
