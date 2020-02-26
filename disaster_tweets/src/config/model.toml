@@ -1,0 +1,7 @@
+max_vocab_size = 80000
+hidden_size = 512
+num_layers = 2
+dropout_rate = 0.5
+embedding_dropout = 0.2
+tie_weights = true
+skip = true

@@ -1,0 +1,4 @@
+epochs = 30
+batch_size = 84
+lr = 3e-3
+early_stopping = 4
