@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 from fastai.basic_data import DataBunch
+from fastai.text.data import TextLMDataBunch
 import pandas as pd
 import torch
 import torch.utils as utils
@@ -109,12 +110,15 @@ class DataPipeline:
             min_count=10
         )
 
+    def load_vocab(self, file: Path) -> None:
+        self._vocab = Vocab.from_file(file)
+
     @property
     def vocab(self):
         if getattr(self, '_vocab', None) is None:
             self._set_vocab()
         return self._vocab
-    
+
     def display_vocab_coverage(self) -> None:
         train_coverage = compute_vocab_coverage(self.split_ds.train_df, self.token_col, self.vocab)
         valid_coverage = compute_vocab_coverage(self.split_ds.val_df, self.token_col, self.vocab)
@@ -146,15 +150,24 @@ class DataPipeline:
 
 
 class LanguageModelDataPipeline(DataPipeline):
-    def _build_databunch(self, train_df: pd.DataFrame, valid_df: pd.DataFrame = None, test_df: pd.DataFrame = None, **kwargs) -> DataBunch:
-        data = DataBunch.create(
-            self._get_ds(train_df),
-            valid_ds=self._get_ds(valid_df) if valid_df is not None else None,
-            test_ds=self._get_ds(test_df) if test_df is not None else None,
-            collate_fn=self.collate_batch,
-            device=torch.device('cuda'),
-            num_workers=4,
-            **kwargs
+    def _build_databunch(
+        self,
+        train_df: pd.DataFrame,
+        valid_df: pd.DataFrame = None,
+        test_df: pd.DataFrame = None,
+        **kwargs
+    ) -> TextLMDataBunch:
+        data = TextLMDataBunch.from_df(
+                train_df=train_df,
+                valid_df=valid_df,
+                test_df=test_df,
+                text_cols=self.split_ds.text_col,
+                vocab=self.vocab.to_fastai(),
+                tokenizer=self.split_ds.tokenizer,
+                bptt=self.maxlen,
+                include_bos=True,
+                include_eos=True,
+                **kwargs
         )
         return data
 

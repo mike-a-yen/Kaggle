@@ -23,7 +23,7 @@ class TwitterDataStream:
         self.tracking = False
         self.filter_retweets = filter_retweets
         self.last_id = None
-    
+
     def get(self, num: int) -> List[Tweet]:
         count = 0
         for tweet in next(self):

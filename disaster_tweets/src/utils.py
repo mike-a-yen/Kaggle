@@ -1,9 +1,11 @@
+from datetime import datetime
 import hashlib
 from pathlib import Path
 from typing import List, Tuple
 
 import pandas as pd
 
+from nn_toolkit.twitter_tools.tweet import Tweet, _TWITTER_DATE_FORMAT
 from nn_toolkit.vocab import Vocab
 
 
@@ -38,3 +40,16 @@ def compute_vocab_coverage(df: pd.DataFrame, token_col: str, vocab: Vocab) -> fl
     is_in_vocab = tokens.apply(sum)
     n_tokens = tokens.apply(len)
     return 100 * is_in_vocab.sum() / n_tokens.sum()
+
+
+def tweet_generator_from_df(df: pd.DataFrame) -> Tweet:
+    for i, row in df.iterrows():
+        data = row.to_dict()
+        data['created_at'] = _convert_to_twitter_time(data['created_at'])
+        yield Tweet(data)
+
+
+def _convert_to_twitter_time(date: datetime) -> str:
+    if pd.isnull(date):
+        return date
+    return datetime.strftime(date, _TWITTER_DATE_FORMAT)
