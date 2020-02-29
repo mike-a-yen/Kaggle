@@ -23,7 +23,24 @@ def main(run_id: str):
     api = init_tweepy_api(creds)
     listener = DisasterBotListener(api, learner, threshold=0.5)
     stream = tweepy.Stream(api.auth, listener)
-    stream.filter(track=['wildfire', 'thunder', 'flood', 'collision', 'snow',], languages=["en"])
+    stream.filter(
+        track=[
+            'earthquake',
+            'tremor',
+            'fire',
+            'wildfire',
+            'thunder',
+            'lightning',
+            'flood',
+            'crash',
+            'collision',
+            'hail',
+            'snow',
+            'storm',
+            'weather',
+        ],
+        languages=["en"]
+    )
 
 
 if __name__ == '__main__':
