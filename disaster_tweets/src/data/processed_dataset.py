@@ -156,10 +156,10 @@ class ProcessedDataset:
         logging.info(f'Dropped {diffs[1]} duplicate samples from extra_df.')
 
     def tokenize_df(self, df: pd.DataFrame) -> None:
-            df['tokens'] = self.tokenizer.process_all(df.text)
-            df['location_tokens'] = self.tokenizer.process_all(df.location.fillna(''))
-            df['keyword_tokens'] = self.tokenizer.process_all(df.keyword.fillna('').str.replace('%20', ' '))
-            with multiprocessing.Pool(multiprocessing.cpu_count() - 1) as pool:
+            df['tokens'] = self.tokenizer.process_all(df.text.tolist())
+            df['location_tokens'] = self.tokenizer.process_all(df.location.fillna('').tolist())
+            df['keyword_tokens'] = self.tokenizer.process_all(df.keyword.fillna('').str.replace('%20', ' ').tolist())
+            with multiprocessing.Pool(multiprocessing.cpu_count() // 2) as pool:
                 df['hashtag_tokens'] = pool.map(extract_hashtags, df.tokens)
                 df['mentions'] = pool.map(extract_mentions, df.tokens)
                 df['emojis'] = pool.map(extract_emojis, df.text)

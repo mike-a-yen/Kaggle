@@ -1,10 +1,11 @@
 from functools import partial
+import logging
 from pathlib import Path
 from typing import Iterable, Tuple
 
 from fastprogress import progress_bar
-from fastai.basic_data import DataBunch
-from fastai.callbacks import EarlyStoppingCallback
+from fastai.basic_data import DataBunch, DatasetType
+from fastai.callbacks import EarlyStoppingCallback, SaveModelCallback
 from fastai.metrics import accuracy
 from fastai.text import language_model_learner, text_classifier_learner
 from fastai.text.data import TextClasDataBunch
@@ -48,9 +49,10 @@ class Trainer:
         self.data_dir = self.run_dir / 'data'
         self.model_dir = self.run_dir / 'model'
 
-        self.run_dir.mkdir(parents=True, exist_ok=True)
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.model_dir.mkdir(parents=True, exist_ok=True)
+        if not self.run_dir.exists():
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+        if not self.data_dir.exists():
+            self.data_dir.mkdir(parents=True, exist_ok=True)
 
         self.vocab_file = 'token_store.pkl'
         self.encoder_name = 'ft_enc'
@@ -104,7 +106,7 @@ class Trainer:
     ) -> DataBunch:
         bs = batch_size if batch_size is not None else self.training_params['batch_size']
         self.logger.log_config({'batch_size': bs})
-        return self.data_pipeline._build_databunch(train_df, valid_df, test_df, bs=bs, path=self.logger.dirname)
+        return self.data_pipeline._build_databunch(train_df, valid_df, test_df, bs=bs, path=self.data_dir)
 
     def build_clas_databunch(
             self,
@@ -116,7 +118,7 @@ class Trainer:
         bs = batch_size if batch_size is not None else self.training_params['batch_size']
         self.logger.log_config({'batch_size': bs})
         data = TextClasDataBunch.from_df(
-            self.logger.dirname,
+            self.data_dir,
             train_df,
             valid_df,
             test_df,
@@ -141,29 +143,34 @@ class Trainer:
         self.learner = language_model_learner(
             data,
             AWD_LSTM,
-            drop_mult=0.5,
+            drop_mult=self.model_params['dropout_rate'],
             pretrained=False,
             callback_fns=self.get_callbacks(),
-            path=self.logger.dirname,
-            model_dir=self.logger.dirname / 'model'
+            path=self.run_dir,
         )
-    
+
     def set_clas_learner(self, data: DataBunch) -> None:
         self.learner = text_classifier_learner(
             data,
             AWD_LSTM,
-            drop_mult=0.5,
-            path=self.logger.dirname,
-            model_dir=self.logger.dirname / 'model'
+            drop_mult=self.model_params['dropout_rate'],
+            callback_fns=self.get_callbacks(),
+            path=self.run_dir,
         )
-        self.learner.load_encoder(self.encoder_name)
+        model_path = self.learner.path / self.learner.model_dir / f'{self.encoder_name}.pth'
+        if model_path.exists():
+            self.learner.load_encoder(self.encoder_name)
+    
+    def load_model(self, model_name: str) -> None:
+        self.learner.load(model_name)
 
     def get_callbacks(self) -> None:
         callbacks = [
             partial(EarlyStoppingCallback, patience=self.training_params['early_stopping']),
+            partial(SaveModelCallback, every='epoch'),
             self.logger.callback_fn()
         ]
-    
+
     def suggest_lr(self) -> None:
         self.learner.lr_find()
         fig = self.learner.recorder.plot(suggestion=True, return_fig=True)
@@ -195,12 +202,17 @@ class Trainer:
         return probs, losses
 
     def make_predictions(self, df: pd.DataFrame) -> pd.DataFrame:
-        probs = []
-        for row in progress_bar(df.itertuples(), total=df.shape[0]):
-            _, pred, prob = self.learner.predict(row.text)
-            probs.append(prob)
-        return torch.stack(probs, dim=0)
+        old_data = self.learner.data
+        df = df.copy()
+        df[self.data_pipeline.split_ds.target_col] = 0
+        data = self.build_clas_databunch(df, df, df)
+        self.learner.data = data
+        probs, *_ = self.learner.get_preds(DatasetType.Test)
+        self.learner.data = old_data
+        return probs
 
     def save_data(self, split_ds: SplitDataset) -> None:
         for name, df in split_ds:
-            df.to_json(self.data_dir / f'{name}.json.gz')
+            save_to = self.data_dir / f'{name}.json.gz'
+            df.to_json(save_to)
+            logging.info(f'Saved {name} to {save_to}')

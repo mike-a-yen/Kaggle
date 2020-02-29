@@ -46,8 +46,8 @@ class RawDataset:
                     df = df.drop_duplicates(subset=['text'])
                 setattr(self, f'{name}_df', df)
 
-        self._set_annotations()
         self.extra_df = self._load_extra_data(extra_data)
+        self._set_annotations()
         self.hash = hash_df(self.extra_df)
         logging.info(f'Loaded {self.train_df.shape[0]} training data.')
         logging.info(f'Loaded {self.test_df.shape[0]} test data.')
@@ -58,14 +58,19 @@ class RawDataset:
         if annotation_filename.exists():
             annotation_df = pd.read_json(annotation_filename)
             logging.info(f'Loaded {annotation_df.shape[0]} annotations.')
-            self.train_df = self.train_df.merge(
-                annotation_df[['id', 'annotation']],
-                left_on='id',
-                right_on='id',
-                how='left'
-            )
+            anno_map = dict(zip(annotation_df.id, annotation_df.annotation))
+            self.train_df['annotation'] = self.train_df.id.map(anno_map)
+            self.test_df['annotation'] = self.test_df.id.map(anno_map)
+            self.extra_df['annotation'] = self.extra_df.id.map(anno_map)
+            training_annotations = (~self.train_df.annotation.isnull()).sum()
+            test_annotations = (~self.test_df.annotation.isnull()).sum()
+            extra_annotations = (~self.extra_df.annotation.isnull()).sum()
+            logging.info(f'Set {training_annotations} training annotations.')
+            logging.info(f'Set {test_annotations} test annotations.')
+            logging.info(f'Set {extra_annotations} extra annotations.')
             self.train_df.annotation.fillna(self.train_df.target, inplace=True)
-            self.train_df['annotation'] = self.train_df.annotation.astype(self.train_df.target.dtype)
+            self.train_df['annotation'] = self.train_df.annotation.astype(pd.Int64Dtype())
+            self.extra_df['annotation'] = self.extra_df.annotation.astype(pd.Int64Dtype())
             self.target_col = 'annotation'
         else:
             self.train_df['annotation'] = None
