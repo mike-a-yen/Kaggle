@@ -6,9 +6,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from nn_toolkit.text.model.dense import HighwayBlock, DropConnect
-from nn_toolkit.text.model.embedding import Embedding
-from nn_toolkit.text.model.sequence import TextSequenceEncoder
+from nn_toolkit.text.model import Embedding
+from nn_toolkit.text.model.dense import DropConnect, HighwayBlock
+from nn_toolkit.utils import freeze_parameters
 
 
 def attention(query, key, value, mask = None):
@@ -22,56 +22,73 @@ def attention(query, key, value, mask = None):
     return output, attn_weights
 
 
-class SimpleClassifier(nn.Module):
-    def __init__(self, model_dir: Path) -> None:
+class ClasModel(nn.Module):
+    def __init__(self, vocab_size: int, hidden_size: int, num_layers: int = 2, dropout_rate: float = 0.0, padding_idx: int = 1) -> None:
         super().__init__()
-        self.config = {'model_dir': str(model_dir)}
-        self.embedding_layer = Embedding.from_file(model_dir / 'fwd_embedding.pth')
-        self.encoder = TextSequenceEncoder.from_file(model_dir / 'fwd_language_model.pth')
-        hidden_size = self.encoder.hidden_size
-        dropout_rate = 0.5
-        self.q_proj, self.k_proj = nn.Linear(hidden_size, hidden_size), nn.Linear(hidden_size, hidden_size)
-        self.densor = nn.Sequential(
-            DropConnect(nn.Linear(hidden_size, hidden_size), dropout_rate),
-            nn.Tanh(),
-            HighwayBlock(hidden_size, dropout_rate),
-            nn.Tanh(),
-            nn.Linear(hidden_size, 1)
+        self.hidden_size = hidden_size
+        self.dropout_rate = dropout_rate
+        self.embedding_layer = Embedding(vocab_size, hidden_size, maxlen=None, padding_idx=padding_idx)
+        self.encoder = nn.LSTM(
+            hidden_size,
+            hidden_size,
+            num_layers=num_layers,
+            dropout=dropout_rate,
+            batch_first=True,
+            bidirectional=True,
         )
+        self.decoder = self.build_decoder()
 
-    def forward(self, X: torch.LongTensor) -> torch.FloatTensor:
-        emb = self.embedding_layer(X)
-        mask = self.embedding_layer.get_mask(X)
-        emb = self.encoder(emb, mask)
-        q, k = self.q_proj(emb), self.k_proj(emb)
-        emb, attn = attention(q, k, k, mask.float().unsqueeze(-1))
-        emb = emb[:, -1]
-        logit = self.densor(emb)
+    def forward(self, X: dict) -> torch.FloatTensor:
+        tokens = X['tokens']
+        pad_mask = self.embedding_layer.get_mask(tokens)
+        emb = self.embedding_layer(tokens)
+        emb, *_ = self.encoder(emb)
+        emb = self.apply_pad_mask(emb, pad_mask)
+        emb = emb.mean(1)
+        logit = self.decoder(emb)
         return logit
 
-    def save(self, path: Path) -> None:
-        with open(path.with_suffix('.config'), 'w') as fo:
-            json.dump(self.config, fo)
-        torch.save(self.state_dict(), path)
+    def apply_pad_mask(self, emb: torch.FloatTensor, mask: torch.ByteTensor) -> torch.FloatTensor:
+        mask = mask.unsqueeze(-1)
+        emb = emb * (1 - mask.float())
+        return emb
 
     @classmethod
-    def from_file(cls, path: Path) -> None:
-        config_file = path.with_suffix('.config')
-        with open(config_file) as fo:
-            config = json.load(fo)
-        model = cls(Path(config['model_dir']))
-        model.load_state_dict(
-            torch.load(path)
-        )
+    def from_language_model(cls, language_model: nn.Module) -> nn.Module:
+        vocab_size = language_model.embedding_layer.vocab_size
+        hidden_size = language_model.embedding_layer.hidden_size
+        num_layers = language_model.encoder.num_layers
+        dropout_rate = language_model.encoder.dropout
+        padding_idx = language_model.embedding_layer.padding_idx
+        model = cls(vocab_size, hidden_size, num_layers, dropout_rate, padding_idx)
+        model.embedding_layer = language_model.embedding_layer
+        model.encoder = language_model.encoder
+        model.decoder = model.build_decoder()
+        freeze_parameters(model.embedding_layer)
+        freeze_parameters(model.encoder)
         return model
 
-    def split_layers(self) -> List:
-        groups = [
-            [self.embedding_layer],
-            [self.encoder],
-            [
-                self.rnn,
-                self.densor
-            ],
-        ]
-        return groups
+    def build_decoder(self) -> nn.Sequential:
+        hidden_size = self.embedding_layer.hidden_size
+        encoder_size = (1 + self.encoder.bidirectional) * hidden_size
+        decoder = nn.Sequential(
+            DropConnect(
+                nn.Linear(encoder_size, hidden_size),
+                self.dropout_rate
+            ),
+            nn.Tanh(),
+            DropConnect(
+                nn.Linear(hidden_size, hidden_size),
+                self.dropout_rate
+            ),
+            nn.Tanh(),
+            nn.Linear(hidden_size, 2)
+        )
+        return decoder
+
+    def save(self, path) -> None:
+        state = self.state_dict()
+        torch.save(state, path)
+
+    def load(self, path) -> None:
+        self.load_state_dict(torch.load(path))

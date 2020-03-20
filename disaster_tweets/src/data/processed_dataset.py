@@ -13,7 +13,8 @@ from tqdm import tqdm
 from nn_toolkit.vocab import Vocab, VocabBuilder
 from src.data.augment_data import DataMatcher
 from src.data.raw_dataset import RawDataset
-from src.tokenizer import ProjectTokenizer
+from src.tokenizer import ProjectTokenizer, BertTokenizer
+
 
 _WHITESPACE = set(string.whitespace)
 _PUNCTUATION_WHITESPACE = set(string.punctuation + string.whitespace)
@@ -135,12 +136,13 @@ class ProcessedDataset:
 
     def __init__(self, raw: RawDataset, match_thresh: float = 0.) -> None:
         self.__dict__.update(raw.__dict__)
-        self.tokenizer = ProjectTokenizer()
+        self.num_workers = multiprocessing.cpu_count() // 2
+        # self.tokenizer = ProjectTokenizer(n_cpus=self.num_workers)
+        self.tokenizer = BertTokenizer()
         self.match_thresh = match_thresh
 
     def process(self) -> None:
         self.tokenize_df(self.train_df)
-        self.tokenize_df(self.test_df)
         if self.extra_df.shape[0] > 0:
             self.tokenize_df(self.extra_df)
             self._match_extra_to_train(self.match_thresh)
@@ -157,12 +159,8 @@ class ProcessedDataset:
 
     def tokenize_df(self, df: pd.DataFrame) -> None:
             df['tokens'] = self.tokenizer.process_all(df.text.tolist())
-            df['location_tokens'] = self.tokenizer.process_all(df.location.fillna('').tolist())
-            df['keyword_tokens'] = self.tokenizer.process_all(df.keyword.fillna('').str.replace('%20', ' ').tolist())
-            with multiprocessing.Pool(multiprocessing.cpu_count() // 2) as pool:
-                df['hashtag_tokens'] = pool.map(extract_hashtags, df.tokens)
-                df['mentions'] = pool.map(extract_mentions, df.tokens)
-                df['emojis'] = pool.map(extract_emojis, df.text)
+            with multiprocessing.Pool(self.num_workers, maxtasksperchild=1000) as pool:
+                #df['tokens'] = pool.map(self.tokenizer.tokenize, df.text)
                 df['token_hash'] = pool.map(hash_tokens, df.tokens)
 
     def _match_extra_to_train(self, thresh: float = 0.0) -> None:
@@ -171,7 +169,7 @@ class ProcessedDataset:
         'look like' is best defined in `DataMatcher`
         """
         original_size = self.extra_df.shape[0]
-        real_df = pd.concat([self.train_df, self.test_df], sort=False)
+        real_df = self.train_df.copy()
         self.matcher = DataMatcher(real_df, text_col='text', token_col='tokens')
         if thresh > 0.:
             self.extra_df = self.matcher.looks_real(self.extra_df, thresh=thresh)

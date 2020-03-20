@@ -13,15 +13,17 @@ class SplitDataset:
         self.target_col = processed.target_col
         self.tokenizer = processed.tokenizer
         if frac > 0:
-            self.train_df, self.val_df = [
+            self.trainval_df, self.test_df = [
                 df.copy() for df in
                 train_test_split(processed.train_df, test_size=frac)
+            ]
+            self.train_df, self.val_df = [
+                df.copy() for df in train_test_split(self.trainval_df, test_size=frac)
             ]
         else:
             self.train_df = processed.train_df
             self.val_df = pd.DataFrame(columns=self.train_df.columns)
         self.trainval_df = pd.concat([self.train_df, self.val_df], sort=False).copy()
-        self.test_df = processed.test_df
         self.extra_df = processed.extra_df
 
     def __iter__(self) -> Tuple[str, pd.DataFrame]:

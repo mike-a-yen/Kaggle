@@ -1,14 +1,18 @@
 import re
 import string
+from pathlib import Path
 from typing import List
 
 import fastai.text.transform
 from nltk.tokenize import TweetTokenizer
+import tokenizers
 from nn_toolkit.tokenizer import SimpleTokenizer
 import spacy
 
 
 _WHITESPACE = set(string.whitespace)
+_DATA_DIR = Path(__file__).parents[1].resolve() / 'data'
+_ASSET_DIR = _DATA_DIR / 'assets'
 
 
 def preprocessing(text: str) -> str:
@@ -33,6 +37,7 @@ def preprocessing(text: str) -> str:
     text = re.sub(r'\${2,}', '$$', text)
     text = re.sub(r'\x90', ' ', text)
     text = re.sub(r'[\x80-\x9f]', '', text)
+    text = re.sub(r'#[0-9]{1,}', '#<num>', text)
     text = re.sub(r'#', ' #', text)
     text = re.sub(r'@', ' @', text)
     return text
@@ -132,5 +137,22 @@ class TweetSpacyTokenizer(fastai.text.transform.SpacyTokenizer):
 
 
 class ProjectTokenizer(fastai.text.transform.Tokenizer):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(tok_func=TweetSpacyTokenizer, pre_rules=[fastai.text.transform.fix_html, preprocessing], post_rules=[postprocessing], **kwargs)
+
+
+class BertTokenizer:
     def __init__(self) -> None:
-        super().__init__(tok_func=TweetSpacyTokenizer, pre_rules=[fastai.text.transform.fix_html, preprocessing], post_rules=[postprocessing])
+        word_peice_file = _ASSET_DIR / 'bert-base-uncased-vocab.txt'
+        self.tokenizer = tokenizers.BertWordPieceTokenizer(str(word_peice_file), lowercase=True)
+    
+    def preprocess(self, text: str) -> str:
+        return preprocessing(text)
+    
+    def tokenize(self, text: str) -> List[str]:
+        text = self.preprocess(text)
+        tokens = self.tokenizer.encode(text).tokens[1:-1]
+        return tokens
+
+    def process_all(self, texts: List[str]):
+        return [self.tokenize(text) for text in texts]

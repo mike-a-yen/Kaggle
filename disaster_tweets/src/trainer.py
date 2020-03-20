@@ -6,27 +6,29 @@ from typing import Iterable, Tuple
 from fastprogress import progress_bar
 from fastai.basic_data import DataBunch, DatasetType
 from fastai.callbacks import EarlyStoppingCallback, SaveModelCallback
-from fastai.metrics import accuracy
-from fastai.text import language_model_learner, text_classifier_learner
-from fastai.text.data import TextClasDataBunch
-from fastai.text.models import AWD_LSTM
+from fastai.metrics import accuracy, auc_roc_score, fbeta
 from fastai.train import Learner
 import numpy as np
 import pandas as pd
+import pickle
+import toml
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import wandb
 
 from nn_toolkit.logger import Logger
-from nn_toolkit.text.model import LanguageModel
+from nn_toolkit.vocab import Vocab
+from nn_toolkit.utils import count_trainable_params
 
 from src.data.data_analyzer import DataAnalyzer
-from src.data.data_pipeline import LanguageModelDataPipeline
+from src.data.data_pipeline import MLMDataPipeline, ClasDataPipeline
 from src.data.raw_dataset import RawDataset
 from src.data.processed_dataset import ProcessedDataset
 from src.data.split_dataset import SplitDataset
-from src.utils import get_extra_tweets
+from src.model.language_model import MaskedLanguageModel
+from src.model.clas_model import ClasModel
+from src.model.masked_metrics import MaskedCrossEntropy, MaskedAccuracy
 
 
 _PROJECT_DIR = Path(__file__).parents[1].resolve()
@@ -34,10 +36,21 @@ _DATA_DIR = _PROJECT_DIR / 'data'
 _MODEL_DIR = _DATA_DIR / 'models'
 
 
-def count_trainable_params(model: nn.Module):
-    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
-    params = sum([np.prod(p.size()) for p in model_parameters])
-    return params
+def f1_score(y_pred, y_true):
+    n = y_true.shape[0]
+    proba = y_pred.softmax(dim=-1)[:, 1].view(n, 1)
+    return fbeta(proba, y_true.view(n, 1), beta=1, thresh=0.5)
+
+
+def auc_score(y_pred, y_true):
+    n = y_true.shape[0]
+    proba = y_pred.softmax(dim=-1)[:, 1]
+    return auc_roc_score(proba, y_true)
+
+
+def save_params(params: dict, path: Path) -> None:
+    with open(path, 'w') as fo:
+        toml.dump(params, fo)
 
 
 class Trainer:
@@ -55,23 +68,23 @@ class Trainer:
             self.data_dir.mkdir(parents=True, exist_ok=True)
 
         self.vocab_file = 'token_store.pkl'
-        self.encoder_name = 'ft_enc'
-
-    def fit(self, **kwargs) -> None:
-        self.training_params.update(kwargs)
-        self.logger.log_config(self.training_params)
-        self.logger.log_config({'trainable_parameters': count_trainable_params(self.learner.model)})
-        self.learner.fit(wandb.run.config.epochs, lr=wandb.run.config.lr)
-        self.learner.save_encoder(self.encoder_name)
+        self.clas_name = 'clas_model.pth'
+        self.lm_name = 'lm_model.pth'
 
     @staticmethod
-    def load_data(subsample: int = 0, match_thresh: float = 0.0, frac: float = 0.1) -> SplitDataset:
-        tweet_files = get_extra_tweets(subsample)
-        raw = RawDataset(extra_data=tweet_files)
+    def load_data(limit: int = None, match_thresh: float = 0.0, frac: float = 0.1) -> SplitDataset:
+        raw = RawDataset(limit=limit)
         processed = ProcessedDataset(raw, match_thresh)
         processed.process()
         split_ds = SplitDataset(processed, frac=frac)  # use almost all the data to train
         return split_ds
+    
+    def set_lm_datapipeline(self, split_ds: SplitDataset) -> None:
+        self.lm_pipeline = MLMDataPipeline(split_ds, 'tokens', max_vocab_size=self.model_params['vocab_size'])
+
+    def set_clas_datapipeline(self, split_ds: SplitDataset) -> None:
+        self.clas_pipeline = ClasDataPipeline.from_pipeline(self.lm_pipeline)
+        self.clas_pipeline.split_ds = split_ds
 
     def analyze(self, split_ds: SplitDataset) -> None:
         analyzer = DataAnalyzer()
@@ -81,95 +94,80 @@ class Trainer:
         self.logger.log_plot(analyzer.plot_number_of_tokens(split_ds), 'number_of_tokens')
         self.logger.log_plot(analyzer.length_plot(split_ds, 'tokens'), 'token_length')
 
-    def set_datapipeline(self, split_ds: SplitDataset) -> None:
-        self.data_pipeline = LanguageModelDataPipeline(
-            split_ds, 'tokens', self.model_params['max_vocab_size']
-        )
-        self.save_vocab()
-
-    def load_datapipeline(self, split_ds: SplitDataset) -> None:
-        self.data_pipeline = LanguageModelDataPipeline(
-            split_ds, 'tokens', self.model_params['max_vocab_size']
-        )
-        self.data_pipeline.load_vocab(self.run_dir / self.vocab_file)
-
     def save_vocab(self) -> None:
         for dir in [self.run_dir, self.logger.dirname]:
-            self.data_pipeline.vocab.to_file(dir / self.vocab_file)
+            self.lm_pipeline.vocab.to_file(dir / self.vocab_file)
 
-    def build_databunch(
-            self,
-            train_df: pd.DataFrame,
-            valid_df: pd.DataFrame = None,
-            test_df: pd.DataFrame = None,
-            batch_size: int = None
-    ) -> DataBunch:
+    def build_lm_databunch(self, split_ds: SplitDataset, batch_size: int = None) -> DataBunch:
         bs = batch_size if batch_size is not None else self.training_params['batch_size']
         self.logger.log_config({'batch_size': bs})
-        return self.data_pipeline._build_databunch(train_df, valid_df, test_df, bs=bs, path=self.data_dir)
-
-    def build_clas_databunch(
-            self,
-            train_df: pd.DataFrame,
-            valid_df: pd.DataFrame = None,
-            test_df: pd.DataFrame = None,
-            batch_size: int = None
-    ) -> DataBunch:
-        bs = batch_size if batch_size is not None else self.training_params['batch_size']
-        self.logger.log_config({'batch_size': bs})
-        data = TextClasDataBunch.from_df(
-            self.data_dir,
-            train_df,
-            valid_df,
-            test_df,
-            text_cols=self.data_pipeline.split_ds.text_col,
-            label_cols=self.data_pipeline.split_ds.target_col,
-            vocab=self.data_pipeline.vocab.to_fastai(),
-            tokenizer=self.data_pipeline.split_ds.tokenizer,
-            bs=bs,
-            include_bos=True,
-            include_eos=True,
+        return self.lm_pipeline._build_databunch(
+            split_ds.extra_df,
+            split_ds.trainval_df,
+            split_ds.test_df,
+            batch_size=bs
         )
-        return data
 
-    def set_model(self, with_pos_embedding: bool = False, **kwargs) -> None:
+    def build_clas_databunch(self, split_ds: SplitDataset, batch_size: int = None) -> DataBunch:
+        bs = batch_size if batch_size is not None else self.training_params['batch_size']
+        self.logger.log_config({'batch_size': bs})
+        return self.clas_pipeline._build_databunch(
+            split_ds.train_df,
+            split_ds.val_df,
+            split_ds.test_df,
+            batch_size=bs
+        )
+
+    def set_lm_model(self, **kwargs) -> None:
         self.model_params.update(kwargs)
-        self.model_params['maxlen'] = self.data_pipeline.maxlen if with_pos_embedding else None
-        self.model_params['padding_idx'] = self.data_pipeline.vocab.pad_idx
+        self.model_params['vocab_size'] = self.lm_pipeline.vocab.size
+        self.model_params['padding_idx'] = self.lm_pipeline.vocab.pad_idx
         self.logger.log_config(self.model_params)
-        self.model = LanguageModel(**self.model_params)
+        self.lm_model = MaskedLanguageModel(**self.model_params)
+
+    def set_clas_model(self, *kwargs) -> None:
+        self.clas_model = ClasModel.from_language_model(self.lm_model)
+        trainable_params = count_trainable_params(self.clas_model)
 
     def set_lm_learner(self, data: DataBunch) -> None:
-        self.learner = language_model_learner(
+        weight = self.lm_model.class_weight.to(data.device)
+        loss_fn = MaskedCrossEntropy(weight=weight)
+        metrics = [MaskedAccuracy()]
+        self.learner = Learner(
             data,
-            AWD_LSTM,
-            drop_mult=self.model_params['dropout_rate'],
-            pretrained=False,
+            self.lm_model,
+            loss_func=loss_fn,
+            opt_func=optim.AdamW,
+            metrics=metrics,
             callback_fns=self.get_callbacks(),
             path=self.run_dir,
         )
 
     def set_clas_learner(self, data: DataBunch) -> None:
-        self.learner = text_classifier_learner(
+        metrics = [accuracy, auc_score]
+        self.learner = Learner(
             data,
-            AWD_LSTM,
-            drop_mult=self.model_params['dropout_rate'],
-            callback_fns=self.get_callbacks(),
+            self.clas_model, 
+            loss_func=nn.CrossEntropyLoss(),
+            opt_func=optim.AdamW,
+            metrics=metrics,
+            callback_fns=self.get_callbacks() + [self.logger.callback_fn()],
             path=self.run_dir,
         )
-        model_path = self.learner.path / self.learner.model_dir / f'{self.encoder_name}.pth'
-        if model_path.exists():
-            self.learner.load_encoder(self.encoder_name)
-    
-    def load_model(self, model_name: str) -> None:
-        self.learner.load(model_name)
 
     def get_callbacks(self) -> None:
         callbacks = [
             partial(EarlyStoppingCallback, patience=self.training_params['early_stopping']),
             partial(SaveModelCallback, every='epoch'),
-            self.logger.callback_fn()
         ]
+        return callbacks
+
+    def save_bits(self) -> None:
+        save_params(self.model_params, self.run_dir / 'model_params.toml')
+        save_params(self.training_params, self.run_dir / 'training_params.toml')
+        self.lm_model.save(self.run_dir / self.lm_name)
+        self.clas_model.save(self.run_dir / self.clas_name)
+        self.save_vocab()
 
     def suggest_lr(self) -> None:
         self.learner.lr_find()
@@ -196,16 +194,16 @@ class Trainer:
 
         probs = self.make_predictions(df)
         losses = None
-        if self.data_pipeline.split_ds.target_col in df.columns:
-            targets = df[self.data_pipeline.split_ds.target_col]
+        if self.clas_pipeline.split_ds.target_col in df.columns:
+            targets = df[self.clas_pipeline.split_ds.target_col]
             losses = binary_loss(targets, probs[:, 1].numpy())
         return probs, losses
 
     def make_predictions(self, df: pd.DataFrame) -> pd.DataFrame:
         old_data = self.learner.data
         df = df.copy()
-        df[self.data_pipeline.split_ds.target_col] = 0
-        data = self.build_clas_databunch(df, df, df)
+        df[self.clas_pipeline.split_ds.target_col] = 0
+        data = self.clas_pipeline._build_databunch(df, df, df)
         self.learner.data = data
         probs, *_ = self.learner.get_preds(DatasetType.Test)
         self.learner.data = old_data

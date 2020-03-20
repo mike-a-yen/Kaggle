@@ -12,6 +12,7 @@ from nn_toolkit.vocab import Vocab, VocabBuilder
 from src.data.data_sampler import BucketedSampler
 from src.data.split_dataset import SplitDataset
 from src.data.offline_data import TweetLMDataset, TweetClasDataset
+from src.data.torch_data import MLMDataset, ClasDataset
 from src.tokenizer import ProjectTokenizer
 
 
@@ -20,10 +21,10 @@ _DATA_DIR = _PROJECT_DIR / 'data'
 _MODEL_DIR = _DATA_DIR / 'models'
 
 
-def compute_maxlen(batch: List):
+def compute_maxlen(batch: List[torch.Tensor]) -> int:
     maxlen = 0
     for sample in batch:
-        length = sample.size(0)
+        length = len(sample)
         maxlen = max(maxlen, length)
     return maxlen
 
@@ -45,6 +46,17 @@ def pad_sequence(seq: torch.LongTensor, maxlen: int, pad_val: int) -> torch.Long
     tokens[-seqlen:] = seq[0: seqlen]  # trim long tweets
     tokens[0: maxlen-seqlen] = pad_val
     return tokens
+
+
+def pad_batch(batch: List[torch.Tensor], maxlen: int, pad_val: int) -> torch.LongTensor:
+    B = len(batch)
+    padded = torch.zeros(B, maxlen, dtype=torch.int64)
+    padded[:, :] = pad_val
+    for i in range(B):
+        sample = batch[i]
+        n = len(sample)
+        padded[i, 0:n] = sample
+    return padded
 
 
 def build_vocab(split_ds: SplitDataset, token_col: str, **kwargs) -> Vocab:
@@ -107,7 +119,7 @@ class DataPipeline:
             self.split_ds,
             self.token_col,
             max_size=self.max_vocab_size,
-            min_count=10
+            min_count=2
         )
 
     def load_vocab(self, file: Path) -> None:
@@ -149,6 +161,61 @@ class DataPipeline:
         return payload
 
 
+class MLMDataPipeline(DataPipeline):
+
+    default_ds = MLMDataset
+
+    def _build_databunch(self, train_df: pd.DataFrame, valid_df: pd.DataFrame, test_df: pd.DataFrame, **kwargs) -> DataBunch:
+        train_dl = self.df_to_dl(train_df, shuffle=True, **kwargs)
+        valid_dl = self.df_to_dl(valid_df, shuffle=False, **kwargs)
+        test_dl = self.df_to_dl(test_df, shuffle=False, **kwargs) if not test_df is None else None
+        return DataBunch(train_dl, valid_dl, test_dl=test_dl, collate_fn=MLMDataPipeline.collate_batch)
+
+    def df_to_dl(self, df: pd.DataFrame, **kwargs) -> utils.data.DataLoader:
+        ds = self.default_ds(df, self.vocab, self.tokenizer)
+        dl_kwargs = {'batch_size': 64, 'num_workers': 3, 'collate_fn': self.collate_batch, 'pin_memory': True}
+        dl_kwargs.update(kwargs)
+        dl = utils.data.DataLoader(ds, **dl_kwargs)
+        return dl
+
+    @staticmethod
+    def collate_batch(batch: List[dict]) -> Tuple:
+        data = dict()
+        for key in ['tokens', 'masked_tokens', 'mask']:
+            samples = [sample[key] for sample in batch]
+            pad_val = int(key != 'mask')
+            maxlen = compute_maxlen(samples)
+            padded_samples = pad_batch(samples, maxlen, pad_val=pad_val)
+            data[key] = padded_samples
+        try:
+            labels = [sample['label'] for sample in batch]
+            labels = torch.LongTensor(labels)
+            data['label'] = labels
+        except KeyError:
+            pass
+
+        xb = {'masked_tokens': data['masked_tokens'], 'mask': data['mask'], 'tokens': data['tokens']}
+        yb = {'tokens': data['tokens'], 'mask': data['mask']}
+        if 'label' in data:
+            yb = data['label']
+        return xb, yb
+
+    @property
+    def tokenizer(self):
+        return self.split_ds.tokenizer
+
+
+class ClasDataPipeline(MLMDataPipeline):
+
+    default_ds = ClasDataset
+
+    @classmethod
+    def from_pipeline(cls, data_pipeline: DataPipeline):
+        new_pipeline = cls(data_pipeline.split_ds, data_pipeline.token_col, data_pipeline.max_vocab_size)
+        new_pipeline._vocab = data_pipeline.vocab
+        return new_pipeline
+
+
 class LanguageModelDataPipeline(DataPipeline):
     def _build_databunch(
         self,
@@ -188,25 +255,3 @@ class LanguageModelDataPipeline(DataPipeline):
         tokens = sample[self.token_col]
         tokens = self.vocab.map_to_ints(tokens)
         return torch.LongTensor(tokens)
-
-
-class ClasDataPipeline(DataPipeline):
-    def _get_ds(self, df: pd.DataFrame) -> utils.data.Dataset:
-        return TweetClasDataset(df, self.transform_fn)
-
-    def collate_batch(self, batch: List) -> Tuple:
-        maxlen = min(compute_maxlen([sample[0] for sample in batch]), self.maxlen)
-        xb = torch.stack([
-            pad_sequence(sample[0], maxlen, self.vocab.pad_idx) for sample in batch
-        ])
-        yb = torch.stack([sample[1] for sample in batch]).float()
-        return xb, yb
-
-    def transform_fn(self, sample: pd.Series) -> torch.LongTensor:
-        tokens = sample[self.token_col]
-        tokens = self.vocab.map_to_ints(tokens)
-        return torch.LongTensor(tokens)
-    
-    def _set_vocab(self) -> None:
-        vocab_file = Path(_MODEL_DIR / 'lm_token_store.pkl')
-        self._vocab = Vocab.from_file(vocab_file)

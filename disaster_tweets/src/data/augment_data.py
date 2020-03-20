@@ -41,7 +41,7 @@ class DataMatcher:
     def _estimate_heuristics(self, df: pd.DataFrame) -> np.ndarray:
         """Return binary heuristic based guesses."""
         long_chars = df[self.text_col].apply(len) > 160
-        long_tokens = df[self.token_col].apply(len) > 64
+        long_tokens = df[self.token_col].apply(len) > 84
         too_long = (long_chars | long_tokens)
         return (~too_long).values.astype(np.float32)
 
