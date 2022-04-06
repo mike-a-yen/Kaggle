@@ -55,7 +55,7 @@ nbconvert==5.6.1
 nbformat==5.0.4
 nltk==3.4.5
 -e git+git@github.com:mike-a-yen/nn-toolkit.git@c6dfcbb4b8a15b0a2dc6e19190a870fadf39be22#egg=nn_toolkit
-notebook==6.0.3
+notebook==6.4.10
 numexpr==2.7.1
 numpy==1.18.1
 nvidia-ml-py3==7.352.0
