@@ -51,7 +51,7 @@ MarkupSafe==1.1.1
 matplotlib==3.1.3
 mistune==0.8.4
 murmurhash==1.0.2
-nbconvert==5.6.1
+nbconvert==6.3.0
 nbformat==5.0.4
 nltk==3.4.5
 -e git+git@github.com:mike-a-yen/nn-toolkit.git@c6dfcbb4b8a15b0a2dc6e19190a870fadf39be22#egg=nn_toolkit
